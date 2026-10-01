@@ -4,6 +4,7 @@ import time
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
+from io import StringIO
 
 # ============================================================
 # SETTINGS
@@ -22,60 +23,143 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 LATEST_FILE = OUTPUT_DIR / "keepa_latest.csv"
 HISTORY_FILE = OUTPUT_DIR / "keepa_history.csv"
 
+# Sellerboard product summary
+SELLERBOARD_CSV_URL = (
+    "https://raw.githubusercontent.com/"
+    "Shamroze1516/bumble-sellerboard-automation/"
+    "main/product-summary.csv"
+)
+
 # ============================================================
-# ACTUAL BUMBLE ASINS
-# Add more ASINs here later if needed.
-# Duplicate ASINs are automatically removed.
+# SELLERBOARD -> AUTOMATIC ASIN LIST
 # ============================================================
 
-ASINS = [
-    "B0D5CY66L5",
-    "B07QYP49RP",
-    "B0D54JMSBY",
-    "B0D6GRWCC3",
-    "B08KHRYFFK",
-    "B08DV9L919",
-]
+def load_asins_from_sellerboard():
 
-ASINS = list(dict.fromkeys([
-    x.strip().upper()
-    for x in ASINS
-    if x.strip()
-]))
+    print("")
+    print("=" * 60)
+    print("LOADING ASINS FROM SELLERBOARD")
+    print("=" * 60)
+
+    response = requests.get(
+        SELLERBOARD_CSV_URL,
+        timeout=60
+    )
+
+    response.raise_for_status()
+
+    reader = csv.DictReader(
+        StringIO(response.text)
+    )
+
+    asins = []
+
+    for row in reader:
+
+        asin = None
+        marketplace = None
+
+        for key, value in row.items():
+
+            if key is None:
+                continue
+
+            clean_key = str(key).strip().lower()
+
+            if clean_key == "asin":
+                asin = value
+
+            elif clean_key == "marketplace":
+                marketplace = value
+
+        if not asin:
+            continue
+
+        asin = str(asin).strip().upper()
+
+        # Amazon ASIN = 10 characters
+        if len(asin) != 10:
+            continue
+
+        # Keep Amazon US only if marketplace exists
+        if marketplace:
+
+            market = str(
+                marketplace
+            ).strip().lower()
+
+            allowed_markets = [
+                "amazon.com",
+                "us",
+                "usa",
+                "united states"
+            ]
+
+            if market not in allowed_markets:
+                continue
+
+        asins.append(asin)
+
+    # Remove duplicates but preserve order
+    asins = list(
+        dict.fromkeys(asins)
+    )
+
+    if not asins:
+        raise ValueError(
+            "No valid US ASINs found in Sellerboard product-summary.csv"
+        )
+
+    print(
+        "Sellerboard unique US ASINs found:",
+        len(asins)
+    )
+
+    return asins
+
 
 # ============================================================
 # HELPERS
 # ============================================================
 
 def safe_value(values, index):
+
     try:
+
         value = values[index]
 
         if value is None or value == -1:
             return None
 
         return value
+
     except (IndexError, TypeError):
         return None
 
 
 def cents_to_dollars(value):
+
     if value is None:
         return None
 
     try:
+
         value = int(value)
 
         if value < 0:
             return None
 
-        return round(value / 100, 2)
+        return round(
+            value / 100,
+            2
+        )
 
     except (TypeError, ValueError):
         return None
 
 
 def convert_keepa_minutes(value):
+
     """
     Convert Keepa time to UTC timestamp.
     Keepa epoch starts 2011-01-01.
@@ -85,20 +169,27 @@ def convert_keepa_minutes(value):
         return None
 
     try:
+
         keepa_epoch = 1293840000
-        unix_time = keepa_epoch + (int(value) * 60)
+
+        unix_time = (
+            keepa_epoch +
+            (int(value) * 60)
+        )
 
         return datetime.fromtimestamp(
             unix_time,
             timezone.utc
-        ).strftime("%Y-%m-%d %H:%M:%S")
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
 
     except Exception:
         return None
 
 
 # ============================================================
-# API
+# KEEPA API
 # ============================================================
 
 def pull_keepa(asins):
@@ -110,14 +201,18 @@ def pull_keepa(asins):
         "domain": DOMAIN,
         "asin": ",".join(asins),
 
-        # Current stats + useful recent history
+        # Current stats + 90-day information
         "stats": 90,
         "history": 1
     }
 
     print("")
     print("=" * 60)
-    print("Requesting:", ", ".join(asins))
+    print(
+        "Requesting Keepa batch:",
+        len(asins),
+        "ASINs"
+    )
     print("=" * 60)
 
     response = requests.get(
@@ -130,140 +225,296 @@ def pull_keepa(asins):
 
     data = response.json()
 
-    print("Tokens consumed:", data.get("tokensConsumed"))
-    print("Tokens left:", data.get("tokensLeft"))
-    print("Refill rate:", data.get("refillRate"))
-    print("Products returned:", len(data.get("products", [])))
+    print(
+        "Tokens consumed:",
+        data.get("tokensConsumed")
+    )
+
+    print(
+        "Tokens left:",
+        data.get("tokensLeft")
+    )
+
+    print(
+        "Refill rate:",
+        data.get("refillRate")
+    )
+
+    print(
+        "Products returned:",
+        len(
+            data.get(
+                "products",
+                []
+            )
+        )
+    )
 
     return data
 
 
 # ============================================================
-# TRANSFORM
+# TRANSFORM KEEPA PRODUCT
 # ============================================================
 
-def transform_product(product, pull_time):
+def transform_product(
+    product,
+    pull_time
+):
 
-    stats = product.get("stats") or {}
-    current = stats.get("current") or []
+    stats = (
+        product.get("stats")
+        or {}
+    )
+
+    current = (
+        stats.get("current")
+        or []
+    )
 
     # Keepa current stats array
-    amazon_price_raw = safe_value(current, 0)
-    new_price_raw = safe_value(current, 1)
-    sales_rank = safe_value(current, 3)
-    buy_box_raw = safe_value(current, 10)
+    amazon_price_raw = safe_value(
+        current,
+        0
+    )
 
-    review_count = safe_value(current, 17)
-    rating_raw = safe_value(current, 16)
+    new_price_raw = safe_value(
+        current,
+        1
+    )
+
+    sales_rank = safe_value(
+        current,
+        3
+    )
+
+    buy_box_raw = safe_value(
+        current,
+        10
+    )
+
+    rating_raw = safe_value(
+        current,
+        16
+    )
+
+    review_count = safe_value(
+        current,
+        17
+    )
 
     rating = None
 
     if rating_raw is not None:
+
         try:
-            rating = round(float(rating_raw) / 10, 1)
+
+            rating = round(
+                float(rating_raw) / 10,
+                1
+            )
+
         except Exception:
             pass
 
-    # Useful averages where available
-    avg30 = stats.get("avg30") or []
-    avg90 = stats.get("avg90") or []
+    # ========================================================
+    # 30 / 90 DAY AVERAGES
+    # ========================================================
 
-    avg30_rank = safe_value(avg30, 3)
-    avg90_rank = safe_value(avg90, 3)
+    avg30 = (
+        stats.get("avg30")
+        or []
+    )
+
+    avg90 = (
+        stats.get("avg90")
+        or []
+    )
+
+    avg30_rank = safe_value(
+        avg30,
+        3
+    )
+
+    avg90_rank = safe_value(
+        avg90,
+        3
+    )
 
     avg30_new = cents_to_dollars(
-        safe_value(avg30, 1)
+        safe_value(
+            avg30,
+            1
+        )
     )
 
     avg90_new = cents_to_dollars(
-        safe_value(avg90, 1)
+        safe_value(
+            avg90,
+            1
+        )
     )
 
-    # Category ranks
-    sales_ranks = product.get("salesRanks") or {}
+    # ========================================================
+    # CATEGORY INFORMATION
+    # ========================================================
 
-    category_rank_count = len(sales_ranks)
+    sales_ranks = (
+        product.get("salesRanks")
+        or {}
+    )
 
-    # Images
-    images_csv = product.get("imagesCSV")
+    category_rank_count = len(
+        sales_ranks
+    )
+
+    # ========================================================
+    # PRODUCT IMAGE
+    # ========================================================
+
+    images_csv = product.get(
+        "imagesCSV"
+    )
 
     first_image = None
 
     if images_csv:
-        first_image_id = images_csv.split(",")[0]
+
+        first_image_id = (
+            images_csv
+            .split(",")[0]
+            .strip()
+        )
 
         if first_image_id:
+
             first_image = (
                 "https://images-na.ssl-images-amazon.com/"
-                "images/I/" + first_image_id
+                "images/I/"
+                + first_image_id
             )
 
+    # ========================================================
+    # OUTPUT ROW
+    # ========================================================
+
     row = {
-        "PullTimeUTC": pull_time,
 
-        "ASIN": product.get("asin"),
-        "Title": product.get("title"),
-        "Brand": product.get("brand"),
-        "Manufacturer": product.get("manufacturer"),
-        "Model": product.get("model"),
-        "ProductGroup": product.get("productGroup"),
+        "PullTimeUTC":
+            pull_time,
 
-        "AmazonPrice": cents_to_dollars(
-            amazon_price_raw
-        ),
+        "ASIN":
+            product.get("asin"),
 
-        "NewPrice": cents_to_dollars(
-            new_price_raw
-        ),
+        "Title":
+            product.get("title"),
 
-        "BuyBoxPrice": cents_to_dollars(
-            buy_box_raw
-        ),
+        "Brand":
+            product.get("brand"),
 
-        "CurrentBSR": sales_rank,
+        "Manufacturer":
+            product.get("manufacturer"),
 
-        "Avg30DayBSR": avg30_rank,
-        "Avg90DayBSR": avg90_rank,
+        "Model":
+            product.get("model"),
 
-        "Avg30DayNewPrice": avg30_new,
-        "Avg90DayNewPrice": avg90_new,
+        "ProductGroup":
+            product.get("productGroup"),
 
-        "ReviewCount": review_count,
-        "Rating": rating,
+        "AmazonPrice":
+            cents_to_dollars(
+                amazon_price_raw
+            ),
 
-        "RootCategory": product.get("rootCategory"),
-        "CategoryRankCount": category_rank_count,
+        "NewPrice":
+            cents_to_dollars(
+                new_price_raw
+            ),
 
-        "PackageQuantity": product.get("packageQuantity"),
+        "BuyBoxPrice":
+            cents_to_dollars(
+                buy_box_raw
+            ),
 
-        "ListedSinceUTC": convert_keepa_minutes(
-            product.get("listedSince")
-        ),
+        "CurrentBSR":
+            sales_rank,
 
-        "LastUpdateUTC": convert_keepa_minutes(
-            product.get("lastUpdate")
-        ),
+        "Avg30DayBSR":
+            avg30_rank,
 
-        "LastPriceChangeUTC": convert_keepa_minutes(
-            product.get("lastPriceChange")
-        ),
+        "Avg90DayBSR":
+            avg90_rank,
 
-        "ImageURL": first_image
+        "Avg30DayNewPrice":
+            avg30_new,
+
+        "Avg90DayNewPrice":
+            avg90_new,
+
+        "ReviewCount":
+            review_count,
+
+        "Rating":
+            rating,
+
+        "RootCategory":
+            product.get(
+                "rootCategory"
+            ),
+
+        "CategoryRankCount":
+            category_rank_count,
+
+        "PackageQuantity":
+            product.get(
+                "packageQuantity"
+            ),
+
+        "ListedSinceUTC":
+            convert_keepa_minutes(
+                product.get(
+                    "listedSince"
+                )
+            ),
+
+        "LastUpdateUTC":
+            convert_keepa_minutes(
+                product.get(
+                    "lastUpdate"
+                )
+            ),
+
+        "LastPriceChangeUTC":
+            convert_keepa_minutes(
+                product.get(
+                    "lastPriceChange"
+                )
+            ),
+
+        "ImageURL":
+            first_image
     }
 
     return row
 
 
 # ============================================================
-# SAVE CSV
+# SAVE LATEST SNAPSHOT
 # ============================================================
 
 def save_latest(rows):
 
     if not rows:
+
+        print(
+            "No rows available for latest snapshot."
+        )
+
         return
 
-    fields = list(rows[0].keys())
+    fields = list(
+        rows[0].keys()
+    )
 
     with open(
         LATEST_FILE,
@@ -281,24 +532,44 @@ def save_latest(rows):
         writer.writerows(rows)
 
     print("")
-    print("Latest snapshot saved:", LATEST_FILE)
+    print(
+        "Latest snapshot saved:",
+        LATEST_FILE
+    )
 
+
+# ============================================================
+# APPEND HISTORY
+# ============================================================
 
 def append_history(rows):
 
     if not rows:
+
+        print(
+            "No rows available for history."
+        )
+
         return
 
-    fields = list(rows[0].keys())
+    fields = list(
+        rows[0].keys()
+    )
 
-    file_exists = HISTORY_FILE.exists()
+    file_exists = (
+        HISTORY_FILE.exists()
+    )
+
     file_has_data = (
-        file_exists and
+        file_exists
+        and
         HISTORY_FILE.stat().st_size > 0
     )
 
-    # If old history has different columns,
-    # preserve it as backup before starting new schema.
+    # ========================================================
+    # PRESERVE OLD SCHEMA
+    # ========================================================
+
     if file_has_data:
 
         with open(
@@ -307,24 +578,46 @@ def append_history(rows):
             encoding="utf-8-sig"
         ) as existing:
 
-            reader = csv.reader(existing)
-            old_header = next(reader, [])
+            reader = csv.reader(
+                existing
+            )
+
+            old_header = next(
+                reader,
+                []
+            )
 
         if old_header != fields:
 
-            backup_file = OUTPUT_DIR / (
-                "keepa_history_old_schema.csv"
+            timestamp = datetime.now(
+                timezone.utc
+            ).strftime(
+                "%Y%m%d_%H%M%S"
             )
 
-            if not backup_file.exists():
-                HISTORY_FILE.rename(backup_file)
-
-                print(
-                    "Old history preserved as:",
-                    backup_file
+            backup_file = (
+                OUTPUT_DIR /
+                (
+                    "keepa_history_old_schema_"
+                    + timestamp
+                    + ".csv"
                 )
+            )
+
+            HISTORY_FILE.rename(
+                backup_file
+            )
+
+            print(
+                "Old history preserved as:",
+                backup_file
+            )
 
             file_has_data = False
+
+    # ========================================================
+    # APPEND CURRENT PULL
+    # ========================================================
 
     with open(
         HISTORY_FILE,
@@ -357,18 +650,53 @@ def main():
 
     pull_time = datetime.now(
         timezone.utc
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
     print("")
+    print("=" * 60)
     print("BUMBLE KEEPA AUTOMATION")
-    print("Pull time UTC:", pull_time)
-    print("Unique ASIN count:", len(ASINS))
+    print("=" * 60)
+
+    print(
+        "Pull time UTC:",
+        pull_time
+    )
+
+    # ========================================================
+    # GET ALL BUMBLE ASINS FROM SELLERBOARD
+    # ========================================================
+
+    ASINS = (
+        load_asins_from_sellerboard()
+    )
+
+    print(
+        "Total unique ASIN count:",
+        len(ASINS)
+    )
 
     all_rows = []
 
-    # Keep batches small and safe.
-    # Current list is tiny, so one batch is enough.
+    # Keepa allows multiple products per request.
+    # Small batches are safer for GitHub automation.
     BATCH_SIZE = 10
+
+    total_batches = (
+        len(ASINS)
+        + BATCH_SIZE
+        - 1
+    ) // BATCH_SIZE
+
+    print(
+        "Total Keepa batches:",
+        total_batches
+    )
+
+    # ========================================================
+    # PROCESS BATCHES
+    # ========================================================
 
     for start in range(
         0,
@@ -376,11 +704,42 @@ def main():
         BATCH_SIZE
     ):
 
+        batch_number = (
+            start // BATCH_SIZE
+        ) + 1
+
         batch = ASINS[
-            start:start + BATCH_SIZE
+            start:
+            start + BATCH_SIZE
         ]
 
-        data = pull_keepa(batch)
+        print("")
+        print(
+            "Processing batch",
+            batch_number,
+            "of",
+            total_batches
+        )
+
+        try:
+
+            data = pull_keepa(
+                batch
+            )
+
+        except Exception as error:
+
+            print(
+                "KEEP API ERROR:",
+                error
+            )
+
+            print(
+                "Stopping safely. "
+                "Existing history will not be deleted."
+            )
+
+            break
 
         products = data.get(
             "products",
@@ -396,7 +755,9 @@ def main():
                     pull_time
                 )
 
-                all_rows.append(row)
+                all_rows.append(
+                    row
+                )
 
                 print(
                     "OK:",
@@ -412,14 +773,24 @@ def main():
             except Exception as error:
 
                 print(
-                    "ERROR:",
-                    product.get("asin"),
+                    "PRODUCT ERROR:",
+                    product.get(
+                        "asin"
+                    ),
                     error
                 )
 
-        # Only matters when we later have many batches
-        if start + BATCH_SIZE < len(ASINS):
+        # Small delay between requests
+        if (
+            start + BATCH_SIZE
+            < len(ASINS)
+        ):
+
             time.sleep(2)
+
+    # ========================================================
+    # SAVE RESULTS
+    # ========================================================
 
     print("")
     print(
@@ -427,12 +798,27 @@ def main():
         len(all_rows)
     )
 
-    save_latest(all_rows)
-    append_history(all_rows)
+    if all_rows:
+
+        save_latest(
+            all_rows
+        )
+
+        append_history(
+            all_rows
+        )
+
+    else:
+
+        print(
+            "WARNING: No Keepa products returned."
+        )
 
     print("")
     print("=" * 60)
-    print("BUMBLE KEEPA PULL COMPLETE")
+    print(
+        "BUMBLE KEEPA PULL COMPLETE"
+    )
     print("=" * 60)
 
 

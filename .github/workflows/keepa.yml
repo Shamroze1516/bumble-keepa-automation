@@ -1,7 +1,13 @@
 name: Bumble Keepa Automation
 
 on:
+  # Manual run button bhi rahega
   workflow_dispatch:
+
+  # Automatic daily run
+  schedule:
+    # 06:00 AM Dubai/Gulf = 02:00 UTC
+    - cron: "0 2 * * *"
 
 jobs:
   keepa-pull:

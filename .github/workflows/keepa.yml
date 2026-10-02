@@ -1,7 +1,7 @@
 name: Bumble Keepa Automation
 
 on:
-  # Manual run button bhi rahega
+  # Manual run button
   workflow_dispatch:
 
   # Automatic daily run
@@ -12,6 +12,10 @@ on:
 jobs:
   keepa-pull:
     runs-on: ubuntu-latest
+
+    # Keepa 1 token/min plan par all 155 ASINs complete
+    # karne ke liye job ko refill wait karna padega.
+    timeout-minutes: 180
 
     permissions:
       contents: write
@@ -28,15 +32,15 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run Keepa pull
+      - name: Run Keepa pull - all 155 ASINs
         env:
           KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
-        run: python keepa_pull.py
+        run: python -u keepa_pull.py
 
       - name: Save Keepa data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add keepa_data/
-          git diff --cached --quiet || git commit -m "Update Keepa data"
+          git diff --cached --quiet || git commit -m "Update Keepa data - all ASINs"
           git push

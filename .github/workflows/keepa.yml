@@ -1,13 +1,22 @@
 name: Bumble Keepa Automation
 
 on:
-  # Manual run button
-  workflow_dispatch:
-
-  # Automatic daily run
+  # 1st: GitHub schedule daily 02:00 UTC (07:00 PKT).
+  # Backup: cron-job.org calls workflow_dispatch daily at 10:00 PKT with source=backup.
+  # The gate skips a schedule/backup run if a real run already started in the last 20 hours,
+  # so Keepa runs once a day. The Run button (source=manual) always runs.
   schedule:
-    # 06:00 AM Dubai/Gulf = 02:00 UTC
     - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "manual = always run, backup = skip if already ran today"
+        required: false
+        default: "manual"
+
+concurrency:
+  group: keepa-pull
+  cancel-in-progress: false
 
 jobs:
   keepa-pull:
@@ -19,25 +28,49 @@ jobs:
 
     permissions:
       contents: write
+      actions: read
 
     steps:
+      - name: Skip if a real run happened in the last 20 hours
+        id: gate
+        if: ${{ github.event_name == 'schedule' || inputs.source == 'backup' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh api "repos/${{ github.repository }}/actions/workflows/keepa.yml/runs?per_page=20" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == "in_progress" or (.conclusion == "success" and (((.updated_at|fromdate) - (.run_started_at|fromdate)) > 300)))][0].run_started_at' || true)
+          echo "Last real run: ${last:-none}"
+          if [ -n "$last" ] && [ "$last" != "null" ]; then
+            age=$(( $(date +%s) - $(date -d "$last" +%s) ))
+            echo "Age: ${age}s"
+            if [ "$age" -lt 72000 ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Already ran today - skipping (no duplicate)."
+            fi
+          fi
+
       - name: Checkout repository
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         run: pip install requests
 
       - name: Run Keepa pull - all 155 ASINs
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
         run: python -u keepa_pull.py
 
       - name: Save Keepa data
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

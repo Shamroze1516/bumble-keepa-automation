@@ -14,7 +14,12 @@ START = datetime(2025, 1, 1, tzinfo=timezone.utc).date()
 OUT = Path("keepa_data") / "keepa_extra_daily.csv"
 COMPETITORS = {"B07WMQP4SF": "Homaxy", "B009N83O1C": "Utopia", "B0982ZVLJF": "Infinitee"}
 src = Path("keepa_pull.py").read_text(encoding="utf-8")
-OURS = list(dict.fromkeys(a.strip() for a in re.search(r'ASINS = """(.*?)"""', src, re.S).group(1).split() if a.strip()))
+# Keepa tokens refill slowly (about 1 a minute), so only the ASINs needed for the 4002 family study are pulled.
+FAMILY = ["B07QZT3ST7", "B07QXLSQ33", "B07R2Q6VTQ", "B0DBM52TL2", "B0DBM4C49K",                     # 4002
+          "B07M5V332T", "B07MNGP42J", "B07M9LFFS8", "B08KJ8DG49", "B0DBM24GL1", "B0DBM35PCT",       # 4008
+          "B0DHSLB3F9", "B0DHSP48FK", "B0DHSP7G9C",                                                 # 3068
+          "B0DHSP64SZ", "B0DHSNNH2L", "B0DHSP933F", "B0DHSQZPNV"]                                   # 3069
+OURS = FAMILY
 ASINS = OURS + [a for a in COMPETITORS if a not in OURS]
 print("ASINs:", len(OURS), "ours +", len(ASINS) - len(OURS), "competitors")
 

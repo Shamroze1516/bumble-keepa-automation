@@ -1,0 +1,37 @@
+name: Keepa Extra History Backfill
+
+# Manual only: daily rating / review count / Buy Box / list price / deal / coupon history from 2025-01-01
+# for our ASINs + 3 competitors -> keepa_data/keepa_extra_daily.csv. Shares the keepa-pull queue
+# so it never runs at the same time as the daily Keepa job.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: keepa-pull
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Pull Keepa extra history
+        env:
+          KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
+        run: python -u keepa_extra_backfill.py
+      - name: Save
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add keepa_data/keepa_extra_daily.csv
+          git diff --cached --quiet && exit 0
+          git commit -m "Keepa extra daily history backfill"
+          for i in 1 2 3 4 5; do git pull --rebase && git push && exit 0; sleep 15; done
+          exit 1
